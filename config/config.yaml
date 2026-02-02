@@ -1,0 +1,176 @@
+# Polymarket Trading Bot Configuration
+
+# ============================================
+# TRADING PARAMETERS
+# ============================================
+trading:
+  # Initial bankroll in USDC
+  initial_bankroll: 100
+  
+  # Maximum risk per trade (as fraction of bankroll)
+  max_risk_per_trade: 0.05  # 5%
+  
+  # Kelly Criterion fraction (conservative)
+  kelly_fraction: 0.25  # Use 25% of full Kelly
+  
+  # Minimum bankroll to continue trading
+  min_bankroll: 20  # Stop if bankroll drops below 20 USDC
+  
+  # Stop loss at portfolio level
+  portfolio_stop_loss: 0.20  # Stop if down 20% from peak
+
+# ============================================
+# STRATEGY PARAMETERS
+# ============================================
+strategy:
+  # Minimum LLM confidence to enter trade (0-100)
+  min_confidence: 70
+  
+  # Minimum expected value (edge) to enter trade
+  min_edge: 0.05  # 5%
+  
+  # Minimum market liquidity in USDC
+  min_liquidity: 10000
+  
+  # Event time window (hours from now)
+  min_hours_until_event: 24
+  max_hours_until_event: 72
+  
+  # Position management
+  take_profit: 0.10  # Take profit at 10% gain
+  stop_loss: 0.15    # Stop loss at 15% loss
+  close_before_event_hours: 1  # Close positions 1 hour before event
+  
+  # Maximum concurrent positions
+  max_positions: 5
+
+# ============================================
+# MARKET FILTERS
+# ============================================
+markets:
+  # Sports to focus on
+  sports:
+    - football
+    - soccer
+    - basketball
+    - tennis
+    - baseball
+    - american-football
+  
+  # Market types
+  market_types:
+    - winner
+    - over-under
+    - spread
+  
+  # Minimum volume in last 24h (USDC)
+  min_24h_volume: 5000
+
+# ============================================
+# LLM CONFIGURATION
+# ============================================
+llm:
+  # Primary LLM provider: 'gemini' or 'groq'
+  primary_provider: gemini
+  
+  # Fallback provider
+  fallback_provider: groq
+  
+  # Gemini settings
+  gemini:
+    model: gemini-1.5-flash  # or gemini-1.5-pro
+    temperature: 0.3  # Lower = more deterministic
+    max_tokens: 2000
+    
+  # Groq settings
+  groq:
+    model: llama-3.1-70b-versatile
+    temperature: 0.3
+    max_tokens: 2000
+  
+  # Prompt settings
+  prompt:
+    include_reasoning: true
+    request_confidence: true
+    max_context_length: 8000
+
+# ============================================
+# DATA SOURCES
+# ============================================
+data_sources:
+  # Enable/disable data sources
+  polymarket: true
+  news: true
+  statistics: true
+  odds_comparison: false  # Requires API key
+  injury_reports: true
+  
+  # Cache settings
+  cache_duration_minutes: 30
+  
+  # News settings
+  news:
+    max_articles: 5
+    lookback_days: 3
+
+# ============================================
+# SCHEDULING
+# ============================================
+schedule:
+  # Market scanning interval (minutes)
+  scan_markets_interval: 360  # Every 6 hours
+  
+  # Position check interval (minutes)
+  check_positions_interval: 30
+  
+  # Dashboard update interval (minutes)
+  update_dashboard_interval: 5
+  
+  # Run mode: 'continuous' or 'once'
+  run_mode: continuous
+
+# ============================================
+# LOGGING
+# ============================================
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  
+  # Log file paths
+  trade_log: logs/trades.log
+  error_log: logs/errors.log
+  general_log: logs/bot.log
+  
+  # Log rotation
+  rotation: 10 MB
+  retention: 30 days
+
+# ============================================
+# NOTIFICATIONS
+# ============================================
+notifications:
+  # Enable notifications
+  enabled: false
+  
+  # Notification channels
+  telegram: false
+  email: false
+  
+  # Events to notify
+  on_trade_entry: true
+  on_trade_exit: true
+  on_error: true
+  on_daily_summary: true
+
+# ============================================
+# PAPER TRADING
+# ============================================
+paper_trading:
+  # Simulate slippage (percentage)
+  slippage: 0.002  # 0.2%
+  
+  # Simulate order fill delay (seconds)
+  fill_delay: 2
+  
+  # Track performance
+  track_performance: true
