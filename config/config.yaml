@@ -168,9 +168,56 @@ notifications:
 paper_trading:
   # Simulate slippage (percentage)
   slippage: 0.002  # 0.2%
-  
+
   # Simulate order fill delay (seconds)
   fill_delay: 2
-  
+
   # Track performance
   track_performance: true
+
+# ============================================
+# COPY TRADING
+# ============================================
+copy_trading:
+  # Initial bankroll for copy trading (USDC)
+  initial_bankroll: 100
+
+  # How often to scan tracked wallets for new trades (seconds)
+  scan_interval_seconds: 30
+
+  # How often to check open positions for TP/SL (minutes)
+  position_check_interval_minutes: 5
+
+  # How often to save performance snapshots (minutes)
+  snapshot_interval_minutes: 60
+
+  # Maximum positions from all copied wallets combined
+  max_positions: 20
+
+  # Portfolio stop-loss (fraction of peak bankroll)
+  portfolio_stop_loss: 0.20
+
+  # Maximum slippage allowed before rejecting a copy (price delta 0-1)
+  max_slippage: 0.03
+
+  # Max fraction of bankroll exposed at any time
+  max_total_exposure: 0.80
+
+  # Max fraction of bankroll in a single market
+  max_single_market_exposure: 0.25
+
+  # Take profit / stop loss for copied positions (fraction of position value)
+  take_profit: 0.15
+  stop_loss: 0.20
+
+  # Default wallet settings (can be overridden per wallet)
+  default_wallet:
+    sizing_mode: proportional   # 'proportional', 'fixed', 'percentage'
+    fixed_size: 10.0            # USDC per trade (fixed mode)
+    proportional_factor: 1.0    # Multiplier (proportional mode)
+    percentage_of_bankroll: 0.05 # 5% per trade (percentage mode)
+    copy_delay_seconds: 5       # Wait before copying
+    min_trade_size: 1.0         # Ignore tiny trades
+    max_trade_size: 10000.0     # Cap per trade
+    copy_buys: true
+    copy_sells: true
