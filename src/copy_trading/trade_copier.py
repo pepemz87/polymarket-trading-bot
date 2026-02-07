@@ -235,13 +235,13 @@ class TradeCopier:
         """
         activity = decision.source_activity
 
-        # Enforce copy delay
+        # Enforce copy delay (0 = immediate copy for max speed)
         if wallet.copy_delay_seconds > 0:
             elapsed = (datetime.utcnow() - activity.timestamp).total_seconds()
             remaining = wallet.copy_delay_seconds - elapsed
             if remaining > 0:
                 logger.debug(f"Copy delay: waiting {remaining:.1f}s")
-                time.sleep(min(remaining, 30))  # Cap at 30s max wait
+                time.sleep(min(remaining, 30))
 
         # Record pending trade in DB
         copied_trade = CopiedTrade(

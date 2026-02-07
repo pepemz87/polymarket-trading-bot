@@ -183,7 +183,7 @@ copy_trading:
   initial_bankroll: 100
 
   # How often to scan tracked wallets for new trades (seconds)
-  scan_interval_seconds: 30
+  scan_interval_seconds: 10
 
   # How often to check open positions for TP/SL (minutes)
   position_check_interval_minutes: 5
@@ -216,7 +216,7 @@ copy_trading:
     fixed_size: 10.0            # USDC per trade (fixed mode)
     proportional_factor: 1.0    # Multiplier (proportional mode)
     percentage_of_bankroll: 0.05 # 5% per trade (percentage mode)
-    copy_delay_seconds: 5       # Wait before copying
+    copy_delay_seconds: 0       # 0 = copy immediately, no delay
     min_trade_size: 1.0         # Ignore tiny trades
     max_trade_size: 10000.0     # Cap per trade
     copy_buys: true
