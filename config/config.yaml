@@ -191,8 +191,8 @@ copy_trading:
   # How often to save performance snapshots (minutes)
   snapshot_interval_minutes: 60
 
-  # Maximum positions from all copied wallets combined
-  max_positions: 20
+  # Maximum positions from all copied wallets combined (0 = unlimited)
+  max_positions: 0
 
   # Portfolio stop-loss (fraction of peak bankroll)
   portfolio_stop_loss: 0.20

@@ -125,18 +125,19 @@ class TradeCopier:
                 passes_exposure_check=False,
             )
 
-        # Check max open positions
-        open_count = (
-            self.db.query(CopiedTrade)
-            .filter(CopiedTrade.status.in_(["executed", "pending"]))
-            .count()
-        )
-        if open_count >= self.max_open_positions:
-            return self._skip(
-                wallet, activity,
-                f"Max open positions ({self.max_open_positions}) reached",
-                passes_exposure_check=False,
+        # Check max open positions (0 = unlimited)
+        if self.max_open_positions > 0:
+            open_count = (
+                self.db.query(CopiedTrade)
+                .filter(CopiedTrade.status.in_(["executed", "pending"]))
+                .count()
             )
+            if open_count >= self.max_open_positions:
+                return self._skip(
+                    wallet, activity,
+                    f"Max open positions ({self.max_open_positions}) reached",
+                    passes_exposure_check=False,
+                )
 
         # Check single-market exposure
         market_exposure = (
