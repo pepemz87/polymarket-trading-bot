@@ -72,6 +72,10 @@ start() {
         exit 1
     fi
 
+    # Kill any existing instances first
+    pkill -f "run_copy_trading.py" 2>/dev/null && info "Stopped existing bot instance" || true
+    sleep 1
+
     info "Starting copy trading bot..."
 
     # Run with nohup so it survives terminal close
@@ -186,6 +190,7 @@ import sys
 
 apis = {
     'Gamma API': 'https://gamma-api.polymarket.com/markets?limit=1',
+    'Data API': 'https://data-api.polymarket.com/leaderboard?limit=1',
     'CLOB API': 'https://clob.polymarket.com/time',
 }
 
@@ -241,6 +246,43 @@ SERVICEFILE
     echo "  journalctl -u $SERVICE_NAME -f"
 }
 
+# ----- CLEAN DB -----
+clean_db() {
+    source "$VENV_DIR/bin/activate"
+    cd "$PROJECT_DIR"
+    info "Cleaning stale records from database..."
+    python -c "
+from src.models.database import get_database, Base
+from src.copy_trading.models import CopiedTrade
+
+db = get_database()
+Base.metadata.create_all(db.engine)
+session = db.get_session()
+
+# Count records by status
+for status in ['pending', 'executed', 'skipped', 'failed', 'closed']:
+    count = session.query(CopiedTrade).filter(CopiedTrade.status == status).count()
+    print(f'  {status}: {count}')
+
+# Mark stale pending as failed
+stale = session.query(CopiedTrade).filter(CopiedTrade.status == 'pending').count()
+if stale > 0:
+    session.query(CopiedTrade).filter(CopiedTrade.status == 'pending').update({'status': 'failed', 'error_message': 'Cleaned up'})
+    session.commit()
+    print(f'  -> Marked {stale} stale pending trades as failed')
+
+# Mark stale executed (no entry_price) as failed
+stale_exec = session.query(CopiedTrade).filter(CopiedTrade.status == 'executed', CopiedTrade.entry_price == None).count()
+if stale_exec > 0:
+    session.query(CopiedTrade).filter(CopiedTrade.status == 'executed', CopiedTrade.entry_price == None).update({'status': 'failed', 'error_message': 'Stale - no entry price'})
+    session.commit()
+    print(f'  -> Marked {stale_exec} stale executed trades (no entry price) as failed')
+
+print('Database cleaned!')
+session.close()
+"
+}
+
 # ----- MAIN -----
 case "${1:-setup}" in
     setup)          setup ;;
@@ -255,8 +297,9 @@ case "${1:-setup}" in
     dashboard)      dashboard ;;
     test)           test_connection ;;
     install-service) install_service ;;
+    clean-db)       clean_db ;;
     *)
-        echo "Usage: ./deploy.sh {setup|start|stop|restart|status|logs|add-wallet|list-wallets|discover|dashboard|test|install-service}"
+        echo "Usage: ./deploy.sh {setup|start|stop|restart|status|logs|add-wallet|list-wallets|discover|dashboard|test|clean-db|install-service}"
         exit 1
         ;;
 esac

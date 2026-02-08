@@ -121,6 +121,9 @@ class CopyTradingBot:
         # Analytics
         self.analytics = CopyTradingAnalytics(self.db_session)
 
+        # Clean up stale pending trades from previous crashes
+        self._cleanup_stale_records()
+
         # Bot state
         self.is_running = False
         self.start_time: Optional[datetime] = None
@@ -132,6 +135,28 @@ class CopyTradingBot:
             f"bankroll=${initial_bankroll}, max_positions={max_positions}, "
             f"scan_interval={scan_interval}s, mode={'paper' if self.config.is_paper_trading() else 'live'}"
         )
+
+    def _cleanup_stale_records(self):
+        """Clean up stale pending trades and orphaned records from previous runs."""
+        try:
+            # Mark stale pending trades as failed
+            stale_pending = (
+                self.db_session.query(CopiedTrade)
+                .filter(CopiedTrade.status == "pending")
+                .all()
+            )
+            if stale_pending:
+                for trade in stale_pending:
+                    trade.status = "failed"
+                    trade.error_message = "Stale pending from previous run"
+                self.db_session.commit()
+                logger.info(f"Cleaned up {len(stale_pending)} stale pending trades")
+        except Exception as e:
+            logger.warning(f"Error cleaning up stale records: {e}")
+            try:
+                self.db_session.rollback()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Wallet management (convenience wrappers)
@@ -231,7 +256,11 @@ class CopyTradingBot:
             )
 
         except Exception as e:
-            logger.error(f"Error in scan_and_copy: {e}", exc_info=True)
+            logger.error(f"Error in scan_and_copy: {e}")
+            try:
+                self.db_session.rollback()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Position management
@@ -285,7 +314,11 @@ class CopyTradingBot:
             self.db_session.commit()
 
         except Exception as e:
-            logger.error(f"Error checking positions: {e}", exc_info=True)
+            logger.error(f"Error checking positions: {e}")
+            try:
+                self.db_session.rollback()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Running modes

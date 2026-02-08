@@ -243,6 +243,22 @@ class TradeCopier:
                 logger.debug(f"Copy delay: waiting {remaining:.1f}s")
                 time.sleep(min(remaining, 30))
 
+        # Check if this tx_hash already exists in DB
+        existing = (
+            self.db.query(CopiedTrade)
+            .filter(CopiedTrade.source_tx_hash == activity.tx_hash)
+            .first()
+        )
+        if existing:
+            logger.debug(f"Trade {activity.tx_hash[:16]}... already in DB, skipping")
+            return CopyTradeResult(
+                success=False,
+                error="Trade already recorded",
+                source_wallet=wallet.address,
+                source_tx_hash=activity.tx_hash,
+                market_id=activity.market_id,
+            )
+
         # Record pending trade in DB
         copied_trade = CopiedTrade(
             source_wallet=wallet.address,
@@ -262,7 +278,18 @@ class TradeCopier:
             is_paper_trade=self.is_paper_trading,
         )
         self.db.add(copied_trade)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except Exception as e:
+            logger.warning(f"Error recording pending trade: {e}")
+            self.db.rollback()
+            return CopyTradeResult(
+                success=False,
+                error=f"DB error: {e}",
+                source_wallet=wallet.address,
+                source_tx_hash=activity.tx_hash,
+                market_id=activity.market_id,
+            )
 
         try:
             # Execute the trade
@@ -434,6 +461,17 @@ class TradeCopier:
     ):
         """Record a trade that was evaluated but not copied."""
         activity = decision.source_activity
+
+        # Check if this tx_hash already exists in DB to avoid UNIQUE constraint error
+        existing = (
+            self.db.query(CopiedTrade)
+            .filter(CopiedTrade.source_tx_hash == activity.tx_hash)
+            .first()
+        )
+        if existing:
+            logger.debug(f"Trade {activity.tx_hash[:16]}... already recorded, skipping DB insert")
+            return
+
         record = CopiedTrade(
             source_wallet=decision.source_wallet,
             source_tx_hash=activity.tx_hash,
@@ -453,7 +491,11 @@ class TradeCopier:
             is_paper_trade=self.is_paper_trading,
         )
         self.db.add(record)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except Exception as e:
+            logger.warning(f"Error recording skipped trade: {e}")
+            self.db.rollback()
 
     # ------------------------------------------------------------------
     # Position management
