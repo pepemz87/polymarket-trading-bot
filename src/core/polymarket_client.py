@@ -7,7 +7,7 @@ from loguru import logger
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds
+    from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds, MarketOrderArgs
     CLOB_CLIENT_AVAILABLE = True
 except ImportError:
     logger.warning("py-clob-client not installed. Install with: pip install py-clob-client")
@@ -213,25 +213,43 @@ class PolymarketClient:
             return None
         
         try:
-            # Create order
+            side_enum = "BUY" if side.upper() == "BUY" else "SELL"
+
             if order_type.lower() == "market":
-                # Market order
-                order = self.client.create_market_order(
+                # Market order - amount is in USDC for BUY, shares for SELL
+                market_args = MarketOrderArgs(
                     token_id=token_id,
-                    side=side.upper(),
-                    size=size
+                    amount=size,  # USDC amount
+                    side=side_enum,
                 )
+                logger.info(
+                    f"Placing market order: {side_enum} ${size:.2f} "
+                    f"token={token_id[:20]}..."
+                )
+                order = self.client.create_market_order(market_args)
             else:
                 # Limit order
-                order = self.client.create_order(
+                order_args = OrderArgs(
                     token_id=token_id,
-                    side=side.upper(),
+                    price=price,
                     size=size,
-                    price=price
+                    side=side_enum,
                 )
-            
-            logger.info(f"Order placed: {order}")
-            return order.get("id")
+                logger.info(
+                    f"Placing limit order: {side_enum} {size} @ {price} "
+                    f"token={token_id[:20]}..."
+                )
+                order = self.client.create_order(order_args)
+
+            logger.info(f"Order created, posting: {order}")
+
+            # Submit the signed order
+            resp = self.client.post_order(order)
+            logger.info(f"Order response: {resp}")
+
+            if isinstance(resp, dict):
+                return resp.get("orderID") or resp.get("id") or str(resp)
+            return str(resp)
             
         except Exception as e:
             logger.error(f"Error placing order: {e}")
