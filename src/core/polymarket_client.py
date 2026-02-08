@@ -7,7 +7,7 @@ from loguru import logger
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds
     CLOB_CLIENT_AVAILABLE = True
 except ImportError:
     logger.warning("py-clob-client not installed. Install with: pip install py-clob-client")
@@ -47,12 +47,17 @@ class PolymarketClient:
         
         if CLOB_CLIENT_AVAILABLE and all([api_key, api_secret, api_passphrase, private_key]):
             try:
-                # Initialize CLOB client
+                # Initialize CLOB client with API credentials
+                creds = ApiCreds(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    api_passphrase=api_passphrase,
+                )
                 self.client = ClobClient(
-                    key=api_key,
-                    secret=api_secret,
-                    passphrase=api_passphrase,
-                    chain_id=chain_id
+                    "https://clob.polymarket.com",
+                    key=private_key,
+                    chain_id=chain_id,
+                    creds=creds,
                 )
                 logger.info("Polymarket CLOB client initialized successfully")
             except Exception as e:
