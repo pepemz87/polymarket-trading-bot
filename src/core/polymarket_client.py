@@ -150,21 +150,30 @@ class PolymarketClient:
     def get_price(self, token_id: str) -> Optional[float]:
         """
         Get current price for a token.
-        
+
         Args:
             token_id: Token ID
-            
+
         Returns:
             Current price or None
         """
-        orderbook = self.get_orderbook(token_id)
-        
-        if orderbook.get("bids") and orderbook.get("asks"):
-            # Mid price
-            best_bid = float(orderbook["bids"][0]["price"])
-            best_ask = float(orderbook["asks"][0]["price"])
-            return (best_bid + best_ask) / 2
-        
+        if not self.client:
+            return None
+
+        try:
+            orderbook = self.client.get_order_book(token_id)
+
+            # OrderBookSummary object - access attributes, not dict keys
+            bids = getattr(orderbook, 'bids', None) or []
+            asks = getattr(orderbook, 'asks', None) or []
+
+            if bids and asks:
+                best_bid = float(bids[0].price if hasattr(bids[0], 'price') else bids[0]['price'])
+                best_ask = float(asks[0].price if hasattr(asks[0], 'price') else asks[0]['price'])
+                return (best_bid + best_ask) / 2
+        except Exception as e:
+            logger.warning(f"Error getting price for {token_id[:20]}...: {e}")
+
         return None
     
     def place_order(
