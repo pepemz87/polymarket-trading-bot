@@ -1,7 +1,7 @@
 """
 Wallet Tracker - Monitors target wallets on Polymarket for new trades.
 
-Uses the Polymarket Gamma API and CLOB API to detect new positions
+Uses the Polymarket Data API and CLOB API to detect new positions
 and trade activity from tracked wallets.
 """
 import time
@@ -16,8 +16,8 @@ from .schemas import WalletActivity, WalletDiscovery
 
 # Polymarket API endpoints
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
+DATA_API_BASE = "https://data-api.polymarket.com"
 CLOB_API_BASE = "https://clob.polymarket.com"
-STRAPI_API_BASE = "https://strapi-matic.polymarket.com"
 
 
 class WalletTracker:
@@ -188,13 +188,13 @@ class WalletTracker:
 
     def get_wallet_positions(self, address: str) -> List[Dict[str, Any]]:
         """
-        Fetch current positions for a wallet via Gamma API.
+        Fetch current positions for a wallet via Polymarket Data API.
 
         Returns list of position dicts with keys like:
         market, outcome, size, avgPrice, currentPrice, etc.
         """
-        url = f"{GAMMA_API_BASE}/positions"
-        params = {"user": address.lower(), "sizeThreshold": 0}
+        url = f"{DATA_API_BASE}/positions"
+        params = {"user": address.lower()}
         data = self._api_get(url, params)
         if data and isinstance(data, list):
             return data
@@ -209,16 +209,40 @@ class WalletTracker:
         """
         Fetch recent trade history for a wallet.
 
-        Uses the Gamma API activity endpoint to get fills.
+        Uses the Polymarket Data API activity endpoint to get fills.
+        The Data API expects Unix timestamps (seconds) for the 'start' param.
         """
-        url = f"{GAMMA_API_BASE}/activity"
+        url = f"{DATA_API_BASE}/activity"
         params = {
             "user": address.lower(),
             "limit": limit,
             "type": "TRADE",
         }
         if since:
-            params["startDate"] = since.isoformat()
+            params["start"] = int(since.timestamp())
+
+        data = self._api_get(url, params)
+        if data and isinstance(data, list):
+            return data
+        return []
+
+    def get_wallet_trades(
+        self,
+        address: str,
+        limit: int = 50,
+        since: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch trades for a wallet via the Data API /trades endpoint.
+        This is an alternative to /activity for getting trade data.
+        """
+        url = f"{DATA_API_BASE}/trades"
+        params = {
+            "user": address.lower(),
+            "limit": limit,
+        }
+        if since:
+            params["start"] = int(since.timestamp())
 
         data = self._api_get(url, params)
         if data and isinstance(data, list):
@@ -278,6 +302,12 @@ class WalletTracker:
             wallet.address, limit=50, since=since
         )
 
+        # Fallback: try /trades endpoint if /activity returned nothing
+        if not raw_trades:
+            raw_trades = self.get_wallet_trades(
+                wallet.address, limit=50, since=since
+            )
+
         new_activities: List[WalletActivity] = []
 
         for raw in raw_trades:
@@ -304,9 +334,9 @@ class WalletTracker:
         self, wallet_address: str, raw: Dict[str, Any]
     ) -> Optional[WalletActivity]:
         """
-        Parse raw API response into a WalletActivity.
+        Parse raw Data API response into a WalletActivity.
 
-        The Gamma API returns objects like:
+        The Data API returns objects like:
         {
             "id": "...",
             "type": "TRADE",
@@ -316,12 +346,20 @@ class WalletTracker:
             "outcome": "Yes",
             "size": "50.0",
             "price": "0.65",
-            "timestamp": "2026-01-15T10:30:00Z",
+            "timestamp": 1705312200,  (Unix seconds or ISO string)
             "transactionHash": "0x...",
-            "market": { "id": "...", "question": "...", "slug": "..." }
+            "title": "Will X happen?",
+            "slug": "will-x-happen",
+            "market": "condition_id_here",
+            "asset": "token_id_here"
         }
         """
-        tx_hash = raw.get("transactionHash") or raw.get("id") or raw.get("hash")
+        tx_hash = (
+            raw.get("transactionHash")
+            or raw.get("transaction_hash")
+            or raw.get("id")
+            or raw.get("hash")
+        )
         if not tx_hash:
             return None
 
@@ -345,27 +383,49 @@ class WalletTracker:
         except (TypeError, ValueError):
             price = 0.0
 
-        # Parse timestamp
-        ts_str = raw.get("timestamp") or raw.get("createdAt")
-        if ts_str:
+        # Parse timestamp - Data API may return Unix seconds or ISO string
+        ts_raw = raw.get("timestamp") or raw.get("createdAt")
+        if ts_raw:
             try:
-                timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                timestamp = timestamp.replace(tzinfo=None)
-            except (ValueError, AttributeError):
+                if isinstance(ts_raw, (int, float)):
+                    timestamp = datetime.utcfromtimestamp(ts_raw)
+                elif isinstance(ts_raw, str) and ts_raw.isdigit():
+                    timestamp = datetime.utcfromtimestamp(int(ts_raw))
+                else:
+                    timestamp = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                    timestamp = timestamp.replace(tzinfo=None)
+            except (ValueError, AttributeError, OSError):
                 timestamp = datetime.utcnow()
         else:
             timestamp = datetime.utcnow()
 
-        market_info = raw.get("market") or {}
+        # Data API uses flat structure; fallback to nested "market" dict
+        market_info = raw.get("market") if isinstance(raw.get("market"), dict) else {}
+        market_id = (
+            raw.get("conditionId")
+            or raw.get("condition_id")
+            or raw.get("market")  # Data API uses "market" as condition id string
+            or market_info.get("id")
+            or raw.get("marketId")
+            or ""
+        )
+        # Ensure market_id is a string (not a dict)
+        if isinstance(market_id, dict):
+            market_id = market_id.get("id", "")
+
+        token_id = raw.get("tokenId") or raw.get("token_id") or raw.get("asset")
+        condition_id = raw.get("conditionId") or raw.get("condition_id")
+        question = raw.get("title") or raw.get("question") or market_info.get("question")
+        slug = raw.get("slug") or market_info.get("slug")
 
         return WalletActivity(
             wallet_address=wallet_address,
             tx_hash=tx_hash,
-            market_id=market_info.get("id") or raw.get("conditionId") or raw.get("marketId", ""),
-            condition_id=raw.get("conditionId"),
-            token_id=raw.get("tokenId"),
-            market_question=market_info.get("question"),
-            market_slug=market_info.get("slug"),
+            market_id=str(market_id),
+            condition_id=condition_id,
+            token_id=token_id,
+            market_question=question,
+            market_slug=slug,
             side=side_raw.lower(),
             outcome=outcome_raw,
             size=size,
@@ -385,7 +445,7 @@ class WalletTracker:
         limit: int = 20,
     ) -> List[WalletDiscovery]:
         """
-        Discover profitable wallets via Gamma API leaderboard.
+        Discover profitable wallets via Polymarket Data API leaderboard.
 
         Args:
             min_volume: Minimum total volume traded
@@ -395,7 +455,7 @@ class WalletTracker:
         Returns:
             List of WalletDiscovery objects sorted by profit
         """
-        url = f"{GAMMA_API_BASE}/leaderboard"
+        url = f"{DATA_API_BASE}/leaderboard"
         params = {"limit": limit, "window": "all"}
         data = self._api_get(url, params)
 
@@ -449,7 +509,7 @@ class WalletTracker:
         Returns:
             List of WalletDiscovery objects
         """
-        url = f"{GAMMA_API_BASE}/positions"
+        url = f"{DATA_API_BASE}/positions"
         params = {"market": market_id, "sizeThreshold": min_position_size}
         data = self._api_get(url, params)
 
