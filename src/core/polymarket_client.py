@@ -247,22 +247,30 @@ class PolymarketClient:
                 )
                 order = self.client.create_market_order(market_args)
             else:
+                # For limit orders, size is in shares (not USDC)
+                # Convert USDC amount to shares: shares = usdc_amount / price
+                if price and price > 0:
+                    shares = round(size / price, 2)
+                else:
+                    shares = size
                 order_args = OrderArgs(
                     token_id=token_id,
                     price=price,
-                    size=size,
+                    size=shares,
                     side=side_enum,
                 )
                 logger.info(
-                    f"Placing limit order: {side_enum} {size} @ {price} "
-                    f"token={token_id[:20]}..."
+                    f"Placing limit order: {side_enum} {shares} shares @ {price} "
+                    f"(${size:.2f} USDC) token={token_id[:20]}..."
                 )
                 order = self.client.create_order(order_args)
 
             logger.info(f"Order created, posting...")
 
             # Post order - this uses the patched HTTP helpers if curl_cffi is available
-            resp = self.client.post_order(order, orderType=OrderType.FOK)
+            # Use GTC for limit orders (stays in orderbook), FOK for market orders (fill or kill)
+            ot = OrderType.FOK if order_type.lower() == "market" else OrderType.GTC
+            resp = self.client.post_order(order, orderType=ot)
             logger.info(f"Order response: {resp}")
 
             if isinstance(resp, dict):

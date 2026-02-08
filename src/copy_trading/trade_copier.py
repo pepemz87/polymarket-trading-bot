@@ -417,14 +417,17 @@ class TradeCopier:
                         market_id=activity.market_id,
                     )
 
-        # Place the order
+        # Place the order as a limit order at the source price
+        # Limit orders (GTC) stay in the orderbook until filled,
+        # unlike market orders (FOK) which fail if no immediate match
         try:
+            limit_price = activity.price
             order_id = self.trading_client.place_order(
                 token_id=token_id,
                 side=decision.copy_side,
                 size=decision.copy_size,
-                price=None,  # Market order
-                order_type="market",
+                price=limit_price,
+                order_type="limit",
             )
 
             if order_id:
