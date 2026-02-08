@@ -36,11 +36,13 @@ class WalletTracker:
         polymarket_api_key: Optional[str] = None,
         scan_interval_seconds: int = 30,
         max_retries: int = 3,
+        max_trade_age_seconds: int = 300,
     ):
         self.db = db_session
         self.api_key = polymarket_api_key
         self.scan_interval = scan_interval_seconds
         self.max_retries = max_retries
+        self.max_trade_age_seconds = max_trade_age_seconds
 
         # Track already-seen transactions to avoid duplicate processing
         self._seen_tx_hashes: Set[str] = set()
@@ -297,6 +299,7 @@ class WalletTracker:
 
     def _scan_wallet(self, wallet: TrackedWallet) -> List[WalletActivity]:
         """Scan a single wallet for new activity."""
+        max_trade_age_seconds = self.max_trade_age_seconds
         since = wallet.last_activity or (datetime.utcnow() - timedelta(hours=24))
         raw_trades = self.get_wallet_trade_history(
             wallet.address, limit=50, since=since
@@ -308,7 +311,11 @@ class WalletTracker:
                 wallet.address, limit=50, since=since
             )
 
+        if raw_trades:
+            logger.debug(f"Wallet {wallet.address[:10]}... returned {len(raw_trades)} raw trades")
+
         new_activities: List[WalletActivity] = []
+        now = datetime.utcnow()
 
         for raw in raw_trades:
             try:
@@ -317,6 +324,25 @@ class WalletTracker:
                     continue
                 if activity.tx_hash in self._seen_tx_hashes:
                     continue
+
+                # Skip trades that are too old (stale)
+                trade_age = (now - activity.timestamp).total_seconds()
+                if trade_age > max_trade_age_seconds:
+                    logger.debug(
+                        f"Skipping stale trade {activity.tx_hash[:16]}... "
+                        f"(age={trade_age:.0f}s > {max_trade_age_seconds}s) "
+                        f"{activity.side} {activity.outcome} @ {activity.price:.4f}"
+                    )
+                    self._seen_tx_hashes.add(activity.tx_hash)
+                    continue
+
+                logger.info(
+                    f"NEW trade detected: {activity.side.upper()} {activity.outcome.upper()} "
+                    f"${activity.size:.2f} @ {activity.price:.4f} "
+                    f"(age={trade_age:.0f}s) "
+                    f"market={activity.market_question or activity.market_id[:30]} "
+                    f"token={activity.token_id[:20] if activity.token_id else 'N/A'}..."
+                )
 
                 self._seen_tx_hashes.add(activity.tx_hash)
                 new_activities.append(activity)

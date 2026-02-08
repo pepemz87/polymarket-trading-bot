@@ -390,19 +390,32 @@ class TradeCopier:
 
         # Check current price to avoid excessive slippage
         current_price = self.trading_client.get_price(token_id)
+        logger.info(
+            f"Price check: source={activity.price:.4f}, current={current_price}, "
+            f"token={token_id[:20]}..."
+        )
         if current_price is not None:
-            price_diff = abs(current_price - activity.price)
-            if price_diff > self.max_slippage:
-                return CopyTradeResult(
-                    success=False,
-                    error=(
-                        f"Price moved too much: source={activity.price:.4f}, "
-                        f"current={current_price:.4f}, diff={price_diff:.4f}"
-                    ),
-                    source_wallet=activity.wallet_address,
-                    source_tx_hash=activity.tx_hash,
-                    market_id=activity.market_id,
+            # If current_price is exactly 0.5, the orderbook may be empty/broken
+            # In that case, skip the slippage check and use source price
+            if abs(current_price - 0.5) < 0.001:
+                logger.warning(
+                    f"Suspicious price 0.5000 (likely empty orderbook), "
+                    f"skipping slippage check, using source price {activity.price:.4f}"
                 )
+                current_price = None  # Will use source price for execution
+            else:
+                price_diff = abs(current_price - activity.price)
+                if price_diff > self.max_slippage:
+                    return CopyTradeResult(
+                        success=False,
+                        error=(
+                            f"Price moved too much: source={activity.price:.4f}, "
+                            f"current={current_price:.4f}, diff={price_diff:.4f}"
+                        ),
+                        source_wallet=activity.wallet_address,
+                        source_tx_hash=activity.tx_hash,
+                        market_id=activity.market_id,
+                    )
 
         # Place the order
         try:

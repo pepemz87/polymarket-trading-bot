@@ -170,7 +170,18 @@ class PolymarketClient:
             if bids and asks:
                 best_bid = float(bids[0].price if hasattr(bids[0], 'price') else bids[0]['price'])
                 best_ask = float(asks[0].price if hasattr(asks[0], 'price') else asks[0]['price'])
-                return (best_bid + best_ask) / 2
+                mid = (best_bid + best_ask) / 2
+                logger.debug(
+                    f"Orderbook for {token_id[:20]}...: "
+                    f"bid={best_bid:.4f}, ask={best_ask:.4f}, mid={mid:.4f}, "
+                    f"depth={len(bids)}b/{len(asks)}a"
+                )
+                return mid
+            else:
+                logger.warning(
+                    f"Empty orderbook for {token_id[:20]}...: "
+                    f"bids={len(bids)}, asks={len(asks)}"
+                )
         except Exception as e:
             logger.warning(f"Error getting price for {token_id[:20]}...: {e}")
 

@@ -198,7 +198,12 @@ copy_trading:
   portfolio_stop_loss: 0.20
 
   # Maximum slippage allowed before rejecting a copy (price delta 0-1)
-  max_slippage: 0.03
+  # 0.50 = allow up to 50 cent price difference (generous for copy trading)
+  max_slippage: 0.50
+
+  # Maximum age of a trade to copy (seconds). Trades older than this are skipped.
+  # 300 = 5 minutes. Prevents copying stale trades where price has moved.
+  max_trade_age_seconds: 300
 
   # Max fraction of bankroll exposed at any time
   max_total_exposure: 0.80

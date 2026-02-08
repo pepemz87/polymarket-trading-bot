@@ -98,10 +98,12 @@ class CopyTradingBot:
 
         # Wallet tracker
         scan_interval = self._ct_config.get("scan_interval_seconds", 30)
+        max_trade_age = self._ct_config.get("max_trade_age_seconds", 300)
         self.wallet_tracker = WalletTracker(
             db_session=self.db_session,
             polymarket_api_key=self.config.polymarket_api_key,
             scan_interval_seconds=scan_interval,
+            max_trade_age_seconds=max_trade_age,
         )
 
         # Trade copier
