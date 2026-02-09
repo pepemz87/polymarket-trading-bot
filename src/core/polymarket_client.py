@@ -82,8 +82,11 @@ class PolymarketClient:
 
             original_request = helpers.request
 
+            # WARP SOCKS5 proxy for Cloudflare bypass
+            warp_proxy = "socks5h://127.0.0.1:40000"
+
             def patched_request(endpoint: str, method: str, headers=None, data=None):
-                """Replace httpx with curl_cffi for all HTTP requests."""
+                """Replace httpx with curl_cffi for all HTTP requests via WARP proxy."""
                 if headers is None:
                     headers = {}
 
@@ -100,6 +103,7 @@ class PolymarketClient:
                             headers=headers,
                             timeout=30,
                             impersonate="chrome",
+                            proxy=warp_proxy,
                         )
                     else:
                         if isinstance(data, str):
@@ -109,6 +113,7 @@ class PolymarketClient:
                                 data=data.encode("utf-8"),
                                 timeout=30,
                                 impersonate="chrome",
+                                proxy=warp_proxy,
                             )
                         else:
                             resp = curl_requests.post(
@@ -117,6 +122,7 @@ class PolymarketClient:
                                 json=data,
                                 timeout=30,
                                 impersonate="chrome",
+                                proxy=warp_proxy,
                             )
 
                     if resp.status_code != 200:
@@ -140,7 +146,7 @@ class PolymarketClient:
             helpers.get = lambda endpoint, headers=None, data=None: patched_request(endpoint, "GET", headers, data)
             helpers.post = lambda endpoint, headers=None, data=None: patched_request(endpoint, "POST", headers, data)
 
-            logger.info("HTTP helpers patched with curl_cffi (Cloudflare bypass active)")
+            logger.info("HTTP helpers patched with curl_cffi + WARP proxy (Cloudflare bypass active)")
 
         except Exception as e:
             logger.warning(f"Failed to patch HTTP helpers: {e}")
