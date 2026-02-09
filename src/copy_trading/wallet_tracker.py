@@ -11,6 +11,13 @@ from typing import Optional, List, Dict, Any, Set
 from sqlalchemy.orm import Session
 from loguru import logger
 
+# Try to import curl_cffi for Cloudflare bypass
+try:
+    from curl_cffi import requests as curl_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+
 from .models import TrackedWallet, CopiedTrade
 from .schemas import WalletActivity, WalletDiscovery
 
@@ -51,18 +58,32 @@ class WalletTracker:
         # Load previously seen transactions from DB
         self._load_seen_transactions()
 
-        # HTTP session with retry headers
-        self._http = requests.Session()
-        self._http.headers.update({
+        # HTTP session headers
+        self._headers = {
             "Accept": "application/json",
-            "User-Agent": "PolymarketCopyBot/1.0",
-        })
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
         if self.api_key:
-            self._http.headers["Authorization"] = f"Bearer {self.api_key}"
+            self._headers["Authorization"] = f"Bearer {self.api_key}"
 
-        logger.info(
-            f"WalletTracker initialized (scan_interval={scan_interval_seconds}s)"
-        )
+        # WARP SOCKS5 proxy for Cloudflare bypass
+        self._warp_proxy = "socks5h://127.0.0.1:40000"
+
+        # Fallback: plain requests session (no proxy) for when curl_cffi isn't available
+        self._http = requests.Session()
+        self._http.headers.update(self._headers)
+
+        if CURL_CFFI_AVAILABLE:
+            logger.info(
+                f"WalletTracker initialized (scan_interval={scan_interval_seconds}s, "
+                f"curl_cffi+WARP proxy)"
+            )
+        else:
+            logger.info(
+                f"WalletTracker initialized (scan_interval={scan_interval_seconds}s, "
+                f"plain requests - may be blocked by Cloudflare)"
+            )
 
     def _load_seen_transactions(self):
         """Load already-processed transaction hashes from DB."""
@@ -167,10 +188,21 @@ class WalletTracker:
     # ------------------------------------------------------------------
 
     def _api_get(self, url: str, params: Optional[Dict] = None) -> Optional[Any]:
-        """Make a GET request with retries."""
+        """Make a GET request with retries, using curl_cffi + WARP proxy when available."""
         for attempt in range(self.max_retries):
             try:
-                resp = self._http.get(url, params=params, timeout=15)
+                if CURL_CFFI_AVAILABLE:
+                    resp = curl_requests.get(
+                        url,
+                        params=params,
+                        headers=self._headers,
+                        timeout=15,
+                        impersonate="chrome",
+                        proxy=self._warp_proxy,
+                    )
+                else:
+                    resp = self._http.get(url, params=params, timeout=15)
+
                 if resp.status_code == 200:
                     return resp.json()
                 elif resp.status_code == 429:
@@ -182,7 +214,7 @@ class WalletTracker:
                         f"API {resp.status_code} for {url}: {resp.text[:200]}"
                     )
                     return None
-            except requests.exceptions.RequestException as e:
+            except Exception as e:
                 logger.error(f"Request error (attempt {attempt+1}): {e}")
                 if attempt < self.max_retries - 1:
                     time.sleep(2 ** attempt)
