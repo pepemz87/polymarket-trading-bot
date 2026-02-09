@@ -107,6 +107,50 @@ class TradeCopier:
                 passes_market_filter=False,
             )
 
+        # Determine what OUR trade should be:
+        # - BUY trades: we copy directly (BUY the same outcome)
+        # - SELL trades: the tracked wallet is selling tokens they own.
+        #   We likely don't own those tokens, so we convert:
+        #     SELL YES @ P  →  BUY NO  @ (1-P)  (economic equivalent)
+        #     SELL NO  @ P  →  BUY YES @ (1-P)  (economic equivalent)
+        #   UNLESS we already have an open position in the same market/outcome,
+        #   in which case we should close it (actual SELL).
+        copy_side = activity.side
+        copy_outcome = activity.outcome
+        copy_price = activity.price
+
+        if activity.side == "sell":
+            # Check if we have an open position in this market/outcome to close
+            existing_position = (
+                self.db.query(CopiedTrade)
+                .filter(
+                    CopiedTrade.market_id == activity.market_id,
+                    CopiedTrade.outcome == activity.outcome,
+                    CopiedTrade.side == "buy",
+                    CopiedTrade.status == "executed",
+                )
+                .first()
+            )
+            if existing_position:
+                # We own these tokens, so we can sell them to close
+                copy_side = "sell"
+                copy_outcome = activity.outcome
+                copy_price = activity.price
+                logger.info(
+                    f"SELL copy: closing existing {activity.outcome.upper()} position "
+                    f"(trade #{existing_position.id})"
+                )
+            else:
+                # We don't own these tokens - convert to buying the opposite outcome
+                copy_side = "buy"
+                copy_outcome = "no" if activity.outcome == "yes" else "yes"
+                copy_price = round(1.0 - activity.price, 4)
+                logger.info(
+                    f"SELL copy: no position to close, converting "
+                    f"SELL {activity.outcome.upper()} @ {activity.price:.4f} → "
+                    f"BUY {copy_outcome.upper()} @ {copy_price:.4f}"
+                )
+
         # Check bankroll availability
         available = self.bankroll_manager.get_available_capital()
         if available <= 0:
@@ -168,9 +212,9 @@ class TradeCopier:
             should_copy=True,
             reason="All filters passed",
             copy_size=round(copy_size, 2),
-            copy_side=activity.side,
-            copy_outcome=activity.outcome,
-            target_price=activity.price,
+            copy_side=copy_side,
+            copy_outcome=copy_outcome,
+            target_price=copy_price,
             source_wallet=wallet.address,
             source_activity=activity,
         )
@@ -261,6 +305,8 @@ class TradeCopier:
             )
 
         # Record pending trade in DB
+        # Note: side/outcome reflect OUR trade (may differ from source if
+        # SELL was converted to BUY opposite outcome)
         copied_trade = CopiedTrade(
             source_wallet=wallet.address,
             source_tx_hash=activity.tx_hash,
@@ -268,7 +314,7 @@ class TradeCopier:
             source_price=activity.price,
             market_id=activity.market_id,
             condition_id=activity.condition_id,
-            token_id=activity.token_id,
+            token_id=activity.token_id,  # May be updated in _execute_live_trade
             market_question=activity.market_question,
             market_slug=activity.market_slug,
             side=decision.copy_side,
@@ -340,20 +386,32 @@ class TradeCopier:
         """Execute a paper (simulated) copy trade."""
         activity = decision.source_activity
 
+        # Use the decision's target_price (already converted for opposite outcomes)
+        base_price = decision.target_price or activity.price
+
         # Simulate slippage (paper trades get slightly worse price)
         import random
         slippage_pct = random.uniform(0, self.max_slippage)
-        if activity.side == "buy":
-            executed_price = min(activity.price * (1 + slippage_pct), 0.99)
+        if decision.copy_side == "buy":
+            executed_price = min(base_price * (1 + slippage_pct), 0.99)
         else:
-            executed_price = max(activity.price * (1 - slippage_pct), 0.01)
+            executed_price = max(base_price * (1 - slippage_pct), 0.01)
 
-        slippage = abs(executed_price - activity.price)
+        slippage = abs(executed_price - base_price)
+
+        # Show what we're actually doing vs what the source did
+        is_converted = (decision.copy_outcome != activity.outcome)
+        action_desc = (
+            f"SELL→BUY {decision.copy_outcome.upper()}"
+            if is_converted
+            else f"{decision.copy_side.upper()} {decision.copy_outcome.upper()}"
+        )
 
         logger.info(
-            f"[PAPER] Copied {activity.side.upper()} {activity.outcome.upper()} "
+            f"[PAPER] Copied {action_desc} "
             f"${decision.copy_size:.2f} @ {executed_price:.4f} "
-            f"(source: ${activity.size:.2f} @ {activity.price:.4f}, "
+            f"(source: {activity.side.upper()} {activity.outcome.upper()} "
+            f"${activity.size:.2f} @ {activity.price:.4f}, "
             f"slippage: {slippage:.4f}) "
             f"Market: {activity.market_question or activity.market_id[:20]}"
         )
@@ -388,34 +446,81 @@ class TradeCopier:
                 market_id=activity.market_id,
             )
 
+        # If the copy outcome differs from source (SELL converted to BUY opposite),
+        # we need to resolve the opposite token_id
+        is_opposite_conversion = (
+            decision.copy_outcome != activity.outcome
+            and decision.copy_side == "buy"
+            and activity.side == "sell"
+        )
+
+        if is_opposite_conversion:
+            # Resolve opposite token_id via condition_id
+            condition_id = activity.condition_id or activity.market_id
+            if hasattr(self.trading_client, "get_opposite_token_id"):
+                opposite_token = self.trading_client.get_opposite_token_id(
+                    condition_id, activity.outcome
+                )
+                if opposite_token:
+                    logger.info(
+                        f"Using opposite token: {activity.outcome.upper()} "
+                        f"{token_id[:16]}... → {decision.copy_outcome.upper()} "
+                        f"{opposite_token[:16]}..."
+                    )
+                    token_id = opposite_token
+                else:
+                    return CopyTradeResult(
+                        success=False,
+                        error=(
+                            f"Could not resolve opposite token_id for "
+                            f"{decision.copy_outcome.upper()} "
+                            f"(condition={condition_id[:20]}...)"
+                        ),
+                        source_wallet=activity.wallet_address,
+                        source_tx_hash=activity.tx_hash,
+                        market_id=activity.market_id,
+                    )
+            else:
+                return CopyTradeResult(
+                    success=False,
+                    error="Trading client does not support get_opposite_token_id",
+                    source_wallet=activity.wallet_address,
+                    source_tx_hash=activity.tx_hash,
+                    market_id=activity.market_id,
+                )
+
         # Fetch market info (tick_size, neg_risk) for proper order signing
-        market_info = {"tick_size": "0.01", "neg_risk": False}
+        market_info = {"tick_size": "0.01", "neg_risk": False, "tokens": []}
         if hasattr(self.trading_client, "get_market_info"):
             market_info = self.trading_client.get_market_info(token_id)
+
+        # The price we'll use for our order
+        order_price = decision.target_price
 
         # Check current price to avoid excessive slippage
         current_price = self.trading_client.get_price(token_id)
         logger.info(
-            f"Price check: source={activity.price:.4f}, current={current_price}, "
+            f"Price check: order_price={order_price:.4f}, current={current_price}, "
+            f"side={decision.copy_side.upper()} {decision.copy_outcome.upper()} "
             f"token={token_id[:20]}... "
             f"(tick={market_info['tick_size']}, neg_risk={market_info['neg_risk']})"
+            f"{' [opposite conversion]' if is_opposite_conversion else ''}"
         )
         if current_price is not None:
             # If current_price is exactly 0.5, the orderbook may be empty/broken
-            # In that case, skip the slippage check and use source price
             if abs(current_price - 0.5) < 0.001:
                 logger.warning(
                     f"Suspicious price 0.5000 (likely empty orderbook), "
-                    f"skipping slippage check, using source price {activity.price:.4f}"
+                    f"skipping slippage check, using order price {order_price:.4f}"
                 )
-                current_price = None  # Will use source price for execution
+                current_price = None
             else:
-                price_diff = abs(current_price - activity.price)
+                price_diff = abs(current_price - order_price)
                 if price_diff > self.max_slippage:
                     return CopyTradeResult(
                         success=False,
                         error=(
-                            f"Price moved too much: source={activity.price:.4f}, "
+                            f"Price moved too much: order={order_price:.4f}, "
                             f"current={current_price:.4f}, diff={price_diff:.4f}"
                         ),
                         source_wallet=activity.wallet_address,
@@ -423,30 +528,37 @@ class TradeCopier:
                         market_id=activity.market_id,
                     )
 
-        # Place the order as a limit order at the source price
+        # Place the order as a limit order
         # Limit orders (GTC) stay in the orderbook until filled,
         # unlike market orders (FOK) which fail if no immediate match
         try:
-            limit_price = activity.price
             order_id = self.trading_client.place_order(
                 token_id=token_id,
                 side=decision.copy_side,
                 size=decision.copy_size,
-                price=limit_price,
+                price=order_price,
                 order_type="limit",
                 tick_size=market_info["tick_size"],
                 neg_risk=market_info["neg_risk"],
             )
 
             if order_id:
-                executed_price = current_price or activity.price
-                slippage = abs(executed_price - activity.price)
+                executed_price = current_price or order_price
+                slippage = abs(executed_price - order_price)
 
+                action_desc = (
+                    f"SELL→BUY {decision.copy_outcome.upper()}"
+                    if is_opposite_conversion
+                    else f"{decision.copy_side.upper()} {decision.copy_outcome.upper()}"
+                )
                 logger.info(
-                    f"[LIVE] Copied {activity.side.upper()} {activity.outcome.upper()} "
+                    f"[LIVE] Copied {action_desc} "
                     f"${decision.copy_size:.2f} @ ~{executed_price:.4f} "
                     f"(order_id={order_id})"
                 )
+
+                # Update the record with the actual token_id used
+                record.token_id = token_id
 
                 return CopyTradeResult(
                     success=True,

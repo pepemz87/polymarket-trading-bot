@@ -367,35 +367,96 @@ class PolymarketClient:
         """
         Get market info for a token, including tick_size and neg_risk.
 
-        Returns dict with keys: tick_size, neg_risk, condition_id, etc.
+        Returns dict with keys: tick_size, neg_risk, condition_id, tokens, etc.
         Falls back to safe defaults if the API call fails.
         """
-        defaults = {"tick_size": "0.01", "neg_risk": False}
+        defaults = {"tick_size": "0.01", "neg_risk": False, "tokens": []}
         if not self.client:
             return defaults
 
         try:
-            # The CLOB API /markets endpoint returns market details
-            # including minimum_tick_size and neg_risk
-            import requests as _requests
+            url = f"https://clob.polymarket.com/markets/{token_id}"
+            if CURL_CFFI_AVAILABLE:
+                resp = curl_requests.get(
+                    url,
+                    timeout=10,
+                    impersonate="chrome",
+                    proxy="socks5h://127.0.0.1:40000",
+                )
+            else:
+                import requests as _requests
+                resp = _requests.get(url, timeout=10)
 
-            resp = _requests.get(
-                f"https://clob.polymarket.com/markets/{token_id}",
-                timeout=10,
-            )
             if resp.status_code == 200:
                 data = resp.json()
                 tick_size = data.get("minimum_tick_size", "0.01")
                 neg_risk = data.get("neg_risk", False)
+                tokens = data.get("tokens", [])
+                condition_id = data.get("condition_id", "")
                 logger.debug(
                     f"Market info for {token_id[:20]}...: "
-                    f"tick_size={tick_size}, neg_risk={neg_risk}"
+                    f"tick_size={tick_size}, neg_risk={neg_risk}, "
+                    f"tokens={len(tokens)}"
                 )
-                return {"tick_size": str(tick_size), "neg_risk": bool(neg_risk)}
+                return {
+                    "tick_size": str(tick_size),
+                    "neg_risk": bool(neg_risk),
+                    "tokens": tokens,
+                    "condition_id": condition_id,
+                }
         except Exception as e:
             logger.debug(f"Could not fetch market info for {token_id[:20]}...: {e}")
 
         return defaults
+
+    def get_opposite_token_id(
+        self, condition_id: str, current_outcome: str
+    ) -> Optional[str]:
+        """
+        Get the token_id for the opposite outcome in a market.
+
+        On Polymarket, each market has YES and NO tokens. Given one outcome,
+        this returns the token_id for the other.
+
+        Args:
+            condition_id: The market's condition ID
+            current_outcome: 'yes' or 'no'
+
+        Returns:
+            token_id of the opposite outcome, or None if not found
+        """
+        if not self.client:
+            return None
+
+        try:
+            url = f"https://clob.polymarket.com/markets/{condition_id}"
+            if CURL_CFFI_AVAILABLE:
+                resp = curl_requests.get(
+                    url,
+                    timeout=10,
+                    impersonate="chrome",
+                    proxy="socks5h://127.0.0.1:40000",
+                )
+            else:
+                import requests as _requests
+                resp = _requests.get(url, timeout=10)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                tokens = data.get("tokens", [])
+                opposite = "no" if current_outcome.lower() == "yes" else "yes"
+                for token in tokens:
+                    if token.get("outcome", "").lower() == opposite:
+                        opp_id = token.get("token_id")
+                        logger.info(
+                            f"Resolved opposite token: {current_outcome.upper()} → "
+                            f"{opposite.upper()} = {opp_id[:20] if opp_id else 'None'}..."
+                        )
+                        return opp_id
+        except Exception as e:
+            logger.warning(f"Could not resolve opposite token_id: {e}")
+
+        return None
 
     def cancel_order(self, order_id: str) -> bool:
         if not self.client:

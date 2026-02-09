@@ -239,11 +239,16 @@ class CopyTradingBot:
                     result = self.trade_copier.execute_copy(decision, wallet)
                     if result.success:
                         copied += 1
+                        action = (
+                            f"{decision.copy_side.upper()} {decision.copy_outcome.upper()}"
+                        )
                         logger.info(
                             f"Copied trade from {wallet.label or wallet.address[:10]}...: "
-                            f"{activity.side.upper()} {activity.outcome.upper()} "
-                            f"${decision.copy_size:.2f}"
+                            f"{action} ${decision.copy_size:.2f}"
                         )
+                    elif result.error and "already recorded" in result.error:
+                        # Normal dedup - trade was processed in a previous scan
+                        logger.debug(f"Duplicate trade skipped: {result.error}")
                     else:
                         logger.warning(f"Copy failed: {result.error}")
                 else:
