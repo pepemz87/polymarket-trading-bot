@@ -85,22 +85,36 @@ class PolymarketClient:
             # WARP SOCKS5 proxy for Cloudflare bypass
             warp_proxy = "socks5h://127.0.0.1:40000"
 
+            # Browser-like headers to pass Cloudflare WAF
+            browser_headers = {
+                "Accept": "*/*",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Connection": "keep-alive",
+                "Content-Type": "application/json",
+                "Origin": "https://polymarket.com",
+                "Referer": "https://polymarket.com/",
+                "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-site",
+            }
+
             def patched_request(endpoint: str, method: str, headers=None, data=None):
                 """Replace httpx with curl_cffi for all HTTP requests via WARP proxy."""
                 if headers is None:
                     headers = {}
 
-                # Add standard headers
-                headers["Accept"] = "*/*"
-                headers["Connection"] = "keep-alive"
-                headers["Content-Type"] = "application/json"
+                # Merge browser headers (don't overwrite auth headers from py-clob-client)
+                merged = {**browser_headers, **headers}
 
                 try:
                     if method.upper() == "GET":
-                        headers["Accept-Encoding"] = "gzip"
                         resp = curl_requests.get(
                             endpoint,
-                            headers=headers,
+                            headers=merged,
                             timeout=30,
                             impersonate="chrome",
                             proxy=warp_proxy,
@@ -109,7 +123,7 @@ class PolymarketClient:
                         if isinstance(data, str):
                             resp = curl_requests.post(
                                 endpoint,
-                                headers=headers,
+                                headers=merged,
                                 data=data.encode("utf-8"),
                                 timeout=30,
                                 impersonate="chrome",
@@ -118,7 +132,7 @@ class PolymarketClient:
                         else:
                             resp = curl_requests.post(
                                 endpoint,
-                                headers=headers,
+                                headers=merged,
                                 json=data,
                                 timeout=30,
                                 impersonate="chrome",
