@@ -8,7 +8,10 @@ from loguru import logger
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds, MarketOrderArgs, RequestArgs
+    from py_clob_client.clob_types import (
+        OrderArgs, OrderType, ApiCreds, MarketOrderArgs, RequestArgs,
+        PartialCreateOrderOptions,
+    )
     from py_clob_client.headers.headers import create_level_2_headers
     from py_clob_client.utilities import order_to_json
     CLOB_CLIENT_AVAILABLE = True
@@ -47,8 +50,17 @@ class PolymarketClient:
 
         self.client = None
 
-        if CLOB_CLIENT_AVAILABLE and all([api_key, api_secret, api_passphrase, private_key]):
-            try:
+        if not CLOB_CLIENT_AVAILABLE:
+            logger.warning("Polymarket client not available (py-clob-client not installed)")
+            return
+
+        if not private_key:
+            logger.warning("Polymarket client not configured (missing private key)")
+            return
+
+        try:
+            # If we have all 4 credentials, use them directly
+            if all([api_key, api_secret, api_passphrase]):
                 creds = ApiCreds(
                     api_key=api_key,
                     api_secret=api_secret,
@@ -60,17 +72,46 @@ class PolymarketClient:
                     chain_id=chain_id,
                     creds=creds,
                 )
-                logger.info("Polymarket CLOB client initialized successfully")
+                logger.info("Polymarket CLOB client initialized with provided credentials")
+            else:
+                # Auto-derive API credentials from private key alone
+                logger.info("API key/secret/passphrase not provided, deriving from private key...")
+                self.client = ClobClient(
+                    "https://clob.polymarket.com",
+                    key=private_key,
+                    chain_id=chain_id,
+                )
 
-                # Monkey-patch the py-clob-client HTTP helpers to bypass Cloudflare
+                # Monkey-patch HTTP before deriving (needs network calls)
                 if CURL_CFFI_AVAILABLE:
                     self._patch_http_helpers()
 
-            except Exception as e:
-                logger.error(f"Failed to initialize Polymarket client: {e}")
-                self.client = None
-        else:
-            logger.warning("Polymarket client not fully configured (missing credentials or library)")
+                creds = self.client.create_or_derive_api_creds()
+                if creds:
+                    self.api_key = creds.api_key
+                    self.api_secret = creds.api_secret
+                    self.api_passphrase = creds.api_passphrase
+
+                    # Re-initialize with full credentials
+                    self.client = ClobClient(
+                        "https://clob.polymarket.com",
+                        key=private_key,
+                        chain_id=chain_id,
+                        creds=creds,
+                    )
+                    logger.info("Polymarket CLOB client initialized with derived credentials")
+                else:
+                    logger.error("Failed to derive API credentials from private key")
+                    self.client = None
+                    return
+
+            # Monkey-patch the py-clob-client HTTP helpers to bypass Cloudflare
+            if CURL_CFFI_AVAILABLE:
+                self._patch_http_helpers()
+
+        except Exception as e:
+            logger.error(f"Failed to initialize Polymarket client: {e}", exc_info=True)
+            self.client = None
 
     def _patch_http_helpers(self):
         """
@@ -245,15 +286,34 @@ class PolymarketClient:
         side: str,
         size: float,
         price: Optional[float] = None,
-        order_type: str = "market"
+        order_type: str = "market",
+        tick_size: str = "0.01",
+        neg_risk: bool = False,
     ) -> Optional[str]:
-        """Place an order on Polymarket."""
+        """
+        Place an order on Polymarket.
+
+        Args:
+            token_id: The conditional token ID
+            side: "buy" or "sell"
+            size: Amount in USDC (for buys) or shares (for sells)
+            price: Limit price (required for limit orders)
+            order_type: "market" or "limit"
+            tick_size: Price tick size for the market ("0.1", "0.01", "0.001", "0.0001")
+            neg_risk: Whether the market uses negative risk framework
+        """
         if not self.client:
             logger.error("Cannot place order: client not initialized")
             return None
 
         try:
             side_enum = "BUY" if side.upper() == "BUY" else "SELL"
+
+            # Build order options with tick_size and neg_risk
+            order_options = PartialCreateOrderOptions(
+                tick_size=tick_size,
+                neg_risk=neg_risk,
+            )
 
             if order_type.lower() == "market":
                 market_args = MarketOrderArgs(
@@ -263,9 +323,10 @@ class PolymarketClient:
                 )
                 logger.info(
                     f"Placing market order: {side_enum} ${size:.2f} "
-                    f"token={token_id[:20]}..."
+                    f"token={token_id[:20]}... "
+                    f"(tick_size={tick_size}, neg_risk={neg_risk})"
                 )
-                order = self.client.create_market_order(market_args)
+                order = self.client.create_market_order(market_args, options=order_options)
             else:
                 # For limit orders, size is in shares (not USDC)
                 # Convert USDC amount to shares: shares = usdc_amount / price
@@ -281,9 +342,10 @@ class PolymarketClient:
                 )
                 logger.info(
                     f"Placing limit order: {side_enum} {shares} shares @ {price} "
-                    f"(${size:.2f} USDC) token={token_id[:20]}..."
+                    f"(${size:.2f} USDC) token={token_id[:20]}... "
+                    f"(tick_size={tick_size}, neg_risk={neg_risk})"
                 )
-                order = self.client.create_order(order_args)
+                order = self.client.create_order(order_args, options=order_options)
 
             logger.info(f"Order created, posting...")
 
@@ -298,8 +360,42 @@ class PolymarketClient:
             return str(resp)
 
         except Exception as e:
-            logger.error(f"Error placing order: {e}")
+            logger.error(f"Error placing order: {e}", exc_info=True)
             return None
+
+    def get_market_info(self, token_id: str) -> Dict[str, Any]:
+        """
+        Get market info for a token, including tick_size and neg_risk.
+
+        Returns dict with keys: tick_size, neg_risk, condition_id, etc.
+        Falls back to safe defaults if the API call fails.
+        """
+        defaults = {"tick_size": "0.01", "neg_risk": False}
+        if not self.client:
+            return defaults
+
+        try:
+            # The CLOB API /markets endpoint returns market details
+            # including minimum_tick_size and neg_risk
+            import requests as _requests
+
+            resp = _requests.get(
+                f"https://clob.polymarket.com/markets/{token_id}",
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                tick_size = data.get("minimum_tick_size", "0.01")
+                neg_risk = data.get("neg_risk", False)
+                logger.debug(
+                    f"Market info for {token_id[:20]}...: "
+                    f"tick_size={tick_size}, neg_risk={neg_risk}"
+                )
+                return {"tick_size": str(tick_size), "neg_risk": bool(neg_risk)}
+        except Exception as e:
+            logger.debug(f"Could not fetch market info for {token_id[:20]}...: {e}")
+
+        return defaults
 
     def cancel_order(self, order_id: str) -> bool:
         if not self.client:

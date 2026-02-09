@@ -388,11 +388,17 @@ class TradeCopier:
                 market_id=activity.market_id,
             )
 
+        # Fetch market info (tick_size, neg_risk) for proper order signing
+        market_info = {"tick_size": "0.01", "neg_risk": False}
+        if hasattr(self.trading_client, "get_market_info"):
+            market_info = self.trading_client.get_market_info(token_id)
+
         # Check current price to avoid excessive slippage
         current_price = self.trading_client.get_price(token_id)
         logger.info(
             f"Price check: source={activity.price:.4f}, current={current_price}, "
-            f"token={token_id[:20]}..."
+            f"token={token_id[:20]}... "
+            f"(tick={market_info['tick_size']}, neg_risk={market_info['neg_risk']})"
         )
         if current_price is not None:
             # If current_price is exactly 0.5, the orderbook may be empty/broken
@@ -428,6 +434,8 @@ class TradeCopier:
                 size=decision.copy_size,
                 price=limit_price,
                 order_type="limit",
+                tick_size=market_info["tick_size"],
+                neg_risk=market_info["neg_risk"],
             )
 
             if order_id:
