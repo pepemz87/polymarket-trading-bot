@@ -106,7 +106,7 @@ class PolymarketClient:
                             resp = curl_requests.post(
                                 endpoint,
                                 headers=headers,
-                                content=data.encode("utf-8"),
+                                data=data.encode("utf-8"),
                                 timeout=30,
                                 impersonate="chrome",
                             )
