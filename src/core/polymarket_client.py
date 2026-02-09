@@ -367,13 +367,18 @@ class PolymarketClient:
         """
         Get market info for a token, including tick_size and neg_risk.
 
+        Uses CLOB API first (has minimum_tick_size, neg_risk, tokens),
+        then falls back to Gamma API (has orderPriceMinTickSize, negRisk
+        on event, and clobTokenIds/outcomes mapping).
+
         Returns dict with keys: tick_size, neg_risk, condition_id, tokens, etc.
-        Falls back to safe defaults if the API call fails.
+        Falls back to safe defaults if all API calls fail.
         """
         defaults = {"tick_size": "0.01", "neg_risk": False, "tokens": []}
         if not self.client:
             return defaults
 
+        # Try CLOB API first
         try:
             url = f"https://clob.polymarket.com/markets/{token_id}"
             if CURL_CFFI_AVAILABLE:
@@ -405,9 +410,80 @@ class PolymarketClient:
                     "condition_id": condition_id,
                 }
         except Exception as e:
-            logger.debug(f"Could not fetch market info for {token_id[:20]}...: {e}")
+            logger.debug(f"CLOB market info failed for {token_id[:20]}...: {e}")
+
+        # Fallback: Gamma API (has orderPriceMinTickSize and event-level negRisk)
+        try:
+            url = f"https://gamma-api.polymarket.com/markets?clob_token_ids={token_id}"
+            if CURL_CFFI_AVAILABLE:
+                resp = curl_requests.get(
+                    url,
+                    timeout=10,
+                    impersonate="chrome",
+                    proxy="socks5h://127.0.0.1:40000",
+                )
+            else:
+                import requests as _requests
+                resp = _requests.get(url, timeout=10)
+
+            if resp.status_code == 200:
+                markets = resp.json()
+                if markets and isinstance(markets, list) and len(markets) > 0:
+                    mkt = markets[0]
+                    tick_size = mkt.get("orderPriceMinTickSize", 0.01)
+                    # negRisk is on the event, not market; check events array
+                    neg_risk = False
+                    events = mkt.get("events", [])
+                    if events and isinstance(events, list):
+                        neg_risk = events[0].get("negRisk", False)
+
+                    # Build tokens list from clobTokenIds + outcomes
+                    tokens = self._parse_gamma_tokens(mkt)
+
+                    logger.debug(
+                        f"Gamma market info for {token_id[:20]}...: "
+                        f"tick_size={tick_size}, neg_risk={neg_risk}, "
+                        f"tokens={len(tokens)}"
+                    )
+                    return {
+                        "tick_size": str(tick_size),
+                        "neg_risk": bool(neg_risk),
+                        "tokens": tokens,
+                        "condition_id": mkt.get("conditionId", ""),
+                    }
+        except Exception as e:
+            logger.debug(f"Gamma market info failed for {token_id[:20]}...: {e}")
 
         return defaults
+
+    def _parse_gamma_tokens(self, market_data: Dict) -> List[Dict]:
+        """
+        Parse Gamma API market data to extract token_id ↔ outcome mapping.
+
+        Gamma API returns clobTokenIds and outcomes as JSON strings:
+          clobTokenIds: '["token_yes", "token_no"]'
+          outcomes: '["Yes", "No"]'
+        These map 1:1 by index.
+        """
+        tokens = []
+        try:
+            clob_ids_raw = market_data.get("clobTokenIds", "[]")
+            outcomes_raw = market_data.get("outcomes", "[]")
+
+            clob_ids = json.loads(clob_ids_raw) if isinstance(clob_ids_raw, str) else clob_ids_raw
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
+
+            if isinstance(clob_ids, list) and isinstance(outcomes, list):
+                for i, token_id in enumerate(clob_ids):
+                    outcome = outcomes[i] if i < len(outcomes) else f"outcome_{i}"
+                    tokens.append({
+                        "token_id": str(token_id),
+                        "outcome": str(outcome),
+                    })
+        except (json.JSONDecodeError, TypeError, IndexError) as e:
+            logger.debug(f"Error parsing Gamma tokens: {e}")
+
+        return tokens
 
     def get_opposite_token_id(
         self, condition_id: str, current_outcome: str
@@ -417,6 +493,9 @@ class PolymarketClient:
 
         On Polymarket, each market has YES and NO tokens. Given one outcome,
         this returns the token_id for the other.
+
+        Uses Gamma API (condition_ids query with clobTokenIds/outcomes mapping)
+        as primary source, CLOB API as fallback.
 
         Args:
             condition_id: The market's condition ID
@@ -428,6 +507,39 @@ class PolymarketClient:
         if not self.client:
             return None
 
+        opposite = "no" if current_outcome.lower() == "yes" else "yes"
+
+        # Try Gamma API first - most reliable for clobTokenIds ↔ outcomes mapping
+        try:
+            url = f"https://gamma-api.polymarket.com/markets?condition_ids={condition_id}"
+            if CURL_CFFI_AVAILABLE:
+                resp = curl_requests.get(
+                    url,
+                    timeout=10,
+                    impersonate="chrome",
+                    proxy="socks5h://127.0.0.1:40000",
+                )
+            else:
+                import requests as _requests
+                resp = _requests.get(url, timeout=10)
+
+            if resp.status_code == 200:
+                markets = resp.json()
+                if markets and isinstance(markets, list) and len(markets) > 0:
+                    tokens = self._parse_gamma_tokens(markets[0])
+                    for token in tokens:
+                        if token.get("outcome", "").lower() == opposite:
+                            opp_id = token.get("token_id")
+                            logger.info(
+                                f"Resolved opposite token (Gamma): "
+                                f"{current_outcome.upper()} → {opposite.upper()} = "
+                                f"{opp_id[:20] if opp_id else 'None'}..."
+                            )
+                            return opp_id
+        except Exception as e:
+            logger.debug(f"Gamma opposite token lookup failed: {e}")
+
+        # Fallback: CLOB API
         try:
             url = f"https://clob.polymarket.com/markets/{condition_id}"
             if CURL_CFFI_AVAILABLE:
@@ -444,13 +556,13 @@ class PolymarketClient:
             if resp.status_code == 200:
                 data = resp.json()
                 tokens = data.get("tokens", [])
-                opposite = "no" if current_outcome.lower() == "yes" else "yes"
                 for token in tokens:
                     if token.get("outcome", "").lower() == opposite:
                         opp_id = token.get("token_id")
                         logger.info(
-                            f"Resolved opposite token: {current_outcome.upper()} → "
-                            f"{opposite.upper()} = {opp_id[:20] if opp_id else 'None'}..."
+                            f"Resolved opposite token (CLOB): "
+                            f"{current_outcome.upper()} → {opposite.upper()} = "
+                            f"{opp_id[:20] if opp_id else 'None'}..."
                         )
                         return opp_id
         except Exception as e:
