@@ -110,11 +110,9 @@ class TradeCopier:
         # Determine what OUR trade should be:
         # - BUY trades: we copy directly (BUY the same outcome)
         # - SELL trades: the tracked wallet is selling tokens they own.
-        #   We likely don't own those tokens, so we convert:
-        #     SELL YES @ P  →  BUY NO  @ (1-P)  (economic equivalent)
-        #     SELL NO  @ P  →  BUY YES @ (1-P)  (economic equivalent)
-        #   UNLESS we already have an open position in the same market/outcome,
-        #   in which case we should close it (actual SELL).
+        #   If we have an open position, close it. Otherwise skip.
+        #   Converting SELL to BUY opposite at extreme prices (e.g. BUY NO @ 0.996)
+        #   is capital-inefficient, low-profit, and often rejected by the API.
         copy_side = activity.side
         copy_outcome = activity.outcome
         copy_price = activity.price
@@ -141,14 +139,13 @@ class TradeCopier:
                     f"(trade #{existing_position.id})"
                 )
             else:
-                # We don't own these tokens - convert to buying the opposite outcome
-                copy_side = "buy"
-                copy_outcome = "no" if activity.outcome == "yes" else "yes"
-                copy_price = round(1.0 - activity.price, 4)
-                logger.info(
-                    f"SELL copy: no position to close, converting "
-                    f"SELL {activity.outcome.upper()} @ {activity.price:.4f} → "
-                    f"BUY {copy_outcome.upper()} @ {copy_price:.4f}"
+                # We don't own these tokens - skip this SELL trade.
+                # The tracked wallet is closing/taking profit on a position
+                # we never entered, so there's nothing to copy.
+                return self._skip(
+                    wallet, activity,
+                    f"SELL {activity.outcome.upper()} @ {activity.price:.4f} - "
+                    f"no position to close (wallet is taking profit on a position we never entered)",
                 )
 
         # Check bankroll availability

@@ -360,7 +360,21 @@ class PolymarketClient:
             return str(resp)
 
         except Exception as e:
-            logger.error(f"Error placing order: {e}", exc_info=True)
+            error_detail = str(e)
+            # Try to extract more detail from PolyApiException
+            if hasattr(e, 'error_msg'):
+                error_detail = f"status={getattr(e, 'status_code', '?')}, body={e.error_msg}"
+            elif hasattr(e, 'response'):
+                try:
+                    error_detail = f"status={e.response.status_code}, body={e.response.text[:500]}"
+                except Exception:
+                    pass
+            logger.error(
+                f"Error placing order: {error_detail} "
+                f"(token={token_id[:20]}..., side={side}, size={size}, price={price}, "
+                f"tick_size={tick_size}, neg_risk={neg_risk})",
+                exc_info=True,
+            )
             return None
 
     def get_market_info(self, token_id: str) -> Dict[str, Any]:
