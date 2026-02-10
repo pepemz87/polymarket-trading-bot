@@ -577,9 +577,19 @@ class TradeCopier:
                 )
 
         except Exception as e:
+            # Log full details for debugging
+            error_detail = str(e)
+            if hasattr(e, 'error_msg'):
+                error_detail = f"API error: status={getattr(e, 'status_code', '?')}, body={e.error_msg}"
+            logger.error(
+                f"Order execution failed: {type(e).__name__}: {error_detail} "
+                f"(token={token_id[:20]}..., side={decision.copy_side}, "
+                f"size={decision.copy_size:.2f}, price={decision.target_price})",
+                exc_info=True,
+            )
             return CopyTradeResult(
                 success=False,
-                error=f"Order execution error: {e}",
+                error=f"Order execution error: {error_detail}",
                 source_wallet=activity.wallet_address,
                 source_tx_hash=activity.tx_hash,
                 market_id=activity.market_id,

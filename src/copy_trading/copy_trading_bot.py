@@ -132,6 +132,15 @@ class CopyTradingBot:
         self._last_scan: Optional[datetime] = None
         self._scan_count = 0
 
+        # Check actual USDC balance on Polymarket
+        if not self.config.is_paper_trading() and hasattr(self.trading_client, 'get_usdc_balance'):
+            usdc_balance = self.trading_client.get_usdc_balance()
+            if usdc_balance is not None and usdc_balance < 1.0:
+                logger.warning(
+                    f"LOW BALANCE: Only ${usdc_balance:.2f} USDC on Polymarket! "
+                    f"Deposit USDC to your Polymarket account to place trades."
+                )
+
         logger.info(
             f"Copy Trading Bot initialized: "
             f"bankroll=${initial_bankroll}, max_positions={max_positions}, "

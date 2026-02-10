@@ -10,7 +10,7 @@ try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import (
         OrderArgs, OrderType, ApiCreds, MarketOrderArgs, RequestArgs,
-        PartialCreateOrderOptions,
+        PartialCreateOrderOptions, BalanceAllowanceParams, AssetType,
     )
     from py_clob_client.headers.headers import create_level_2_headers
     from py_clob_client.utilities import order_to_json
@@ -205,6 +205,25 @@ class PolymarketClient:
 
         except Exception as e:
             logger.warning(f"Failed to patch HTTP helpers: {e}")
+
+    def get_usdc_balance(self) -> Optional[float]:
+        """Get the USDC balance on Polymarket."""
+        if not self.client:
+            return None
+        try:
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            result = self.client.get_balance_allowance(params)
+            if isinstance(result, dict):
+                balance_raw = result.get("balance", "0")
+                # Balance is in 6-decimal USDC (1 USDC = 1000000)
+                balance = float(balance_raw) / 1e6
+                logger.info(f"Polymarket USDC balance: ${balance:.2f}")
+                return balance
+            logger.warning(f"Unexpected balance response: {result}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching balance: {e}")
+            return None
 
     def get_markets(
         self,
