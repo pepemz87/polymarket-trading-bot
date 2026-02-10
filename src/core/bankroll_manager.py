@@ -12,75 +12,95 @@ from ..models.schemas import BankrollStatus, Position
 
 class BankrollManager:
     """Manages bankroll and position limits."""
-    
+
     def __init__(
         self,
         db_session: Session,
         initial_bankroll: float,
         max_positions: int = 5,
-        portfolio_stop_loss: float = 0.20
+        portfolio_stop_loss: float = 0.20,
+        trading_client=None,
     ):
         """
         Initialize bankroll manager.
-        
+
         Args:
             db_session: Database session
-            initial_bankroll: Starting bankroll in USDC
+            initial_bankroll: Fallback bankroll if real balance unavailable
             max_positions: Maximum concurrent positions
             portfolio_stop_loss: Stop trading if down this much from peak
+            trading_client: PolymarketClient for fetching real USDC balance
         """
         self.db = db_session
         self.initial_bankroll = initial_bankroll
         self.max_positions = max_positions
         self.portfolio_stop_loss = portfolio_stop_loss
-        
-        self._peak_bankroll = initial_bankroll
+        self.trading_client = trading_client
+
+        # Fetch real balance if possible
+        self._real_balance = None
+        if trading_client and hasattr(trading_client, 'get_usdc_balance'):
+            self._real_balance = trading_client.get_usdc_balance()
+
+        effective_bankroll = self._real_balance if self._real_balance is not None else initial_bankroll
+        self._peak_bankroll = effective_bankroll
         self._stop_loss_triggered = False
-        
-        logger.info(f"Bankroll manager initialized: ${initial_bankroll:.2f}")
+
+        if self._real_balance is not None:
+            logger.info(f"Bankroll manager initialized with REAL balance: ${self._real_balance:.2f} USDC")
+        else:
+            logger.info(f"Bankroll manager initialized with config value: ${initial_bankroll:.2f}")
+
+    def refresh_balance(self) -> Optional[float]:
+        """Fetch the latest USDC balance from Polymarket."""
+        if self.trading_client and hasattr(self.trading_client, 'get_usdc_balance'):
+            balance = self.trading_client.get_usdc_balance()
+            if balance is not None:
+                self._real_balance = balance
+                return balance
+        return None
     
     def get_current_bankroll(self) -> float:
         """
-        Calculate current bankroll including open positions.
-        
+        Get current bankroll. Uses real Polymarket USDC balance when available,
+        otherwise falls back to config-based calculation.
+
         Returns:
             Current total bankroll in USDC
         """
-        # Get all open trades
-        open_trades = self.db.query(Trade).filter(Trade.status == 'open').all()
-        
-        # Calculate total allocated capital
-        allocated = sum(trade.size for trade in open_trades)
-        
-        # Calculate unrealized P&L
-        unrealized_pnl = sum(trade.unrealized_pnl or 0 for trade in open_trades)
-        
-        # Get realized P&L from closed trades
-        closed_trades = self.db.query(Trade).filter(Trade.status == 'closed').all()
-        realized_pnl = sum(trade.realized_pnl or 0 for trade in closed_trades)
-        
-        # Current bankroll = initial + realized P&L + unrealized P&L
-        current_bankroll = self.initial_bankroll + realized_pnl + unrealized_pnl
-        
+        if self._real_balance is not None:
+            current_bankroll = self._real_balance
+        else:
+            # Fallback: config-based calculation
+            closed_trades = self.db.query(Trade).filter(Trade.status == 'closed').all()
+            realized_pnl = sum(trade.realized_pnl or 0 for trade in closed_trades)
+            open_trades = self.db.query(Trade).filter(Trade.status == 'open').all()
+            unrealized_pnl = sum(trade.unrealized_pnl or 0 for trade in open_trades)
+            current_bankroll = self.initial_bankroll + realized_pnl + unrealized_pnl
+
         # Update peak
         if current_bankroll > self._peak_bankroll:
             self._peak_bankroll = current_bankroll
-        
+
         return current_bankroll
     
     def get_available_capital(self) -> float:
         """
         Get available capital for new positions.
-        
+        Uses real USDC balance (which already excludes locked margin in open orders).
+
         Returns:
             Available capital in USDC
         """
+        if self._real_balance is not None:
+            # Real balance from Polymarket already reflects available cash
+            # (open positions are locked as margin, not included in balance)
+            return max(0, self._real_balance)
+
+        # Fallback: config-based calculation
         current_bankroll = self.get_current_bankroll()
-        
-        # Get allocated capital in open positions
         open_trades = self.db.query(Trade).filter(Trade.status == 'open').all()
         allocated = sum(trade.size for trade in open_trades)
-        
         available = current_bankroll - allocated
         return max(0, available)
     

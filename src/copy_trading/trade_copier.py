@@ -432,6 +432,30 @@ class TradeCopier:
         """Execute a real copy trade via the Polymarket CLOB API."""
         activity = decision.source_activity
 
+        # Check real USDC balance before placing order
+        if hasattr(self.trading_client, 'get_usdc_balance'):
+            real_balance = self.trading_client.get_usdc_balance()
+            if real_balance is not None:
+                if real_balance < decision.copy_size:
+                    return CopyTradeResult(
+                        success=False,
+                        error=(
+                            f"Insufficient USDC: need ${decision.copy_size:.2f} "
+                            f"but only ${real_balance:.2f} available on Polymarket"
+                        ),
+                        source_wallet=activity.wallet_address,
+                        source_tx_hash=activity.tx_hash,
+                        market_id=activity.market_id,
+                    )
+                if real_balance < 1.0:
+                    return CopyTradeResult(
+                        success=False,
+                        error=f"Balance too low: ${real_balance:.2f} USDC on Polymarket",
+                        source_wallet=activity.wallet_address,
+                        source_tx_hash=activity.tx_hash,
+                        market_id=activity.market_id,
+                    )
+
         # We need the token_id to place orders
         token_id = activity.token_id
         if not token_id:

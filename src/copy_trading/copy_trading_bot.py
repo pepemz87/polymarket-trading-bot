@@ -94,6 +94,7 @@ class CopyTradingBot:
             initial_bankroll=initial_bankroll,
             max_positions=max_positions,
             portfolio_stop_loss=portfolio_stop_loss,
+            trading_client=self.trading_client if not self.config.is_paper_trading() else None,
         )
 
         # Wallet tracker
@@ -132,18 +133,10 @@ class CopyTradingBot:
         self._last_scan: Optional[datetime] = None
         self._scan_count = 0
 
-        # Check actual USDC balance on Polymarket
-        if not self.config.is_paper_trading() and hasattr(self.trading_client, 'get_usdc_balance'):
-            usdc_balance = self.trading_client.get_usdc_balance()
-            if usdc_balance is not None and usdc_balance < 1.0:
-                logger.warning(
-                    f"LOW BALANCE: Only ${usdc_balance:.2f} USDC on Polymarket! "
-                    f"Deposit USDC to your Polymarket account to place trades."
-                )
-
+        effective_bankroll = self.bankroll_manager.get_current_bankroll()
         logger.info(
             f"Copy Trading Bot initialized: "
-            f"bankroll=${initial_bankroll}, max_positions={max_positions}, "
+            f"bankroll=${effective_bankroll:.2f} (USDC), max_positions={max_positions}, "
             f"scan_interval={scan_interval}s, mode={'paper' if self.config.is_paper_trading() else 'live'}"
         )
 
@@ -204,11 +197,14 @@ class CopyTradingBot:
         logger.info(f"--- Scan #{self._scan_count} ---")
 
         try:
+            # Refresh real USDC balance from Polymarket every scan
+            self.bankroll_manager.refresh_balance()
+
             # Get current bankroll
             bankroll = self.bankroll_manager.get_current_bankroll()
             status = self.bankroll_manager.get_status()
             logger.info(
-                f"Bankroll: ${bankroll:.2f} "
+                f"Bankroll: ${bankroll:.2f} USDC "
                 f"(available: ${status.available_capital:.2f}, "
                 f"positions: {status.open_positions})"
             )
