@@ -210,20 +210,55 @@ class PolymarketClient:
         """Get the USDC balance on Polymarket."""
         if not self.client:
             return None
+
+        # Try py-clob-client's get_balance_allowance first
         try:
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             result = self.client.get_balance_allowance(params)
+            logger.info(f"Balance API raw response: {result}")
             if isinstance(result, dict):
                 balance_raw = result.get("balance", "0")
-                # Balance is in 6-decimal USDC (1 USDC = 1000000)
                 balance = float(balance_raw) / 1e6
-                logger.info(f"Polymarket USDC balance: ${balance:.2f}")
-                return balance
-            logger.warning(f"Unexpected balance response: {result}")
-            return None
+                if balance > 0:
+                    logger.info(f"Polymarket USDC balance: ${balance:.2f}")
+                    return balance
         except Exception as e:
-            logger.error(f"Error fetching balance: {e}")
-            return None
+            logger.warning(f"get_balance_allowance failed: {e}")
+
+        # Fallback: direct CLOB API call
+        try:
+            url = "https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=0"
+            from py_clob_client.headers.headers import create_level_2_headers
+            request_args = RequestArgs(method="GET", request_path="/balance-allowance")
+            headers = create_level_2_headers(self.client.signer, self.client.creds, request_args)
+
+            if CURL_CFFI_AVAILABLE:
+                resp = curl_requests.get(
+                    url, headers=headers, timeout=10,
+                    impersonate="chrome", proxy="socks5h://127.0.0.1:40000",
+                )
+            else:
+                import requests as _requests
+                resp = _requests.get(url, headers=headers, timeout=10)
+
+            logger.info(f"Balance direct API response: status={resp.status_code}, body={resp.text[:500]}")
+            if resp.status_code == 200:
+                data = resp.json()
+                balance_raw = data.get("balance", "0") if isinstance(data, dict) else "0"
+                balance = float(balance_raw) / 1e6
+                if balance > 0:
+                    logger.info(f"Polymarket USDC balance (direct): ${balance:.2f}")
+                    return balance
+                # Maybe balance is already in USDC (not micro-units)
+                balance_alt = float(balance_raw)
+                if balance_alt > 0:
+                    logger.info(f"Polymarket USDC balance (direct, raw): ${balance_alt:.2f}")
+                    return balance_alt
+        except Exception as e:
+            logger.warning(f"Direct balance API failed: {e}")
+
+        logger.warning("Could not fetch USDC balance from Polymarket")
+        return None
 
     def get_markets(
         self,
