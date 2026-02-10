@@ -269,10 +269,32 @@ class PolymarketClient:
             return {"bids": [], "asks": []}
 
     def get_price(self, token_id: str) -> Optional[float]:
-        """Get current price for a token."""
+        """Get current price for a token using CLOB midpoint API."""
         if not self.client:
             return None
 
+        # Try the CLOB midpoint endpoint first (most reliable)
+        try:
+            url = f"https://clob.polymarket.com/midpoint?token_id={token_id}"
+            if CURL_CFFI_AVAILABLE:
+                resp = curl_requests.get(
+                    url, timeout=10, impersonate="chrome",
+                    proxy="socks5h://127.0.0.1:40000",
+                )
+            else:
+                import requests as _requests
+                resp = _requests.get(url, timeout=10)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                mid = float(data.get("mid", 0))
+                if mid > 0:
+                    logger.debug(f"Midpoint for {token_id[:20]}...: {mid:.4f}")
+                    return mid
+        except Exception as e:
+            logger.debug(f"Midpoint API failed for {token_id[:20]}...: {e}")
+
+        # Fallback to orderbook
         try:
             orderbook = self.client.get_order_book(token_id)
 
@@ -282,18 +304,20 @@ class PolymarketClient:
             if bids and asks:
                 best_bid = float(bids[0].price if hasattr(bids[0], 'price') else bids[0]['price'])
                 best_ask = float(asks[0].price if hasattr(asks[0], 'price') else asks[0]['price'])
+                # Reject wide spreads (likely empty/illiquid market)
+                spread = best_ask - best_bid
+                if spread > 0.20:
+                    logger.warning(
+                        f"Wide spread for {token_id[:20]}...: "
+                        f"bid={best_bid:.4f}, ask={best_ask:.4f}, spread={spread:.4f}"
+                    )
+                    return None
                 mid = (best_bid + best_ask) / 2
-                logger.debug(
-                    f"Orderbook for {token_id[:20]}...: "
-                    f"bid={best_bid:.4f}, ask={best_ask:.4f}, mid={mid:.4f}, "
-                    f"depth={len(bids)}b/{len(asks)}a"
-                )
                 return mid
-            else:
-                logger.warning(
-                    f"Empty orderbook for {token_id[:20]}...: "
-                    f"bids={len(bids)}, asks={len(asks)}"
-                )
+            elif bids:
+                # Only bids, no asks - use best bid as estimate
+                best_bid = float(bids[0].price if hasattr(bids[0], 'price') else bids[0]['price'])
+                return best_bid
         except Exception as e:
             logger.warning(f"Error getting price for {token_id[:20]}...: {e}")
 
@@ -371,23 +395,38 @@ class PolymarketClient:
             # Post order - this uses the patched HTTP helpers if curl_cffi is available
             # Use GTC for limit orders (stays in orderbook), FOK for market orders (fill or kill)
             ot = OrderType.FOK if order_type.lower() == "market" else OrderType.GTC
-            resp = self.client.post_order(order, orderType=ot)
+            try:
+                resp = self.client.post_order(order, orderType=ot)
+            except Exception as post_err:
+                error_detail = f"{type(post_err).__name__}: {post_err}"
+                if hasattr(post_err, 'error_msg'):
+                    error_detail = (
+                        f"API rejected: status={getattr(post_err, 'status_code', '?')}, "
+                        f"body={post_err.error_msg}"
+                    )
+                logger.error(
+                    f"post_order failed: {error_detail} "
+                    f"(token={token_id[:20]}..., side={side}, size={size}, price={price}, "
+                    f"tick_size={tick_size}, neg_risk={neg_risk})",
+                    exc_info=True,
+                )
+                raise
+
             logger.info(f"Order response: {resp}")
 
             if isinstance(resp, dict):
+                # Check if API returned an error in the response body
+                if resp.get("errorMsg") or resp.get("error"):
+                    err = resp.get("errorMsg") or resp.get("error")
+                    logger.error(f"API error in response: {err} (full response: {resp})")
+                    return None
                 return resp.get("orderID") or resp.get("id") or str(resp)
             return str(resp)
 
         except Exception as e:
-            error_detail = str(e)
-            # Try to extract more detail from PolyApiException
+            error_detail = f"{type(e).__name__}: {e}"
             if hasattr(e, 'error_msg'):
-                error_detail = f"status={getattr(e, 'status_code', '?')}, body={e.error_msg}"
-            elif hasattr(e, 'response'):
-                try:
-                    error_detail = f"status={e.response.status_code}, body={e.response.text[:500]}"
-                except Exception:
-                    pass
+                error_detail = f"API error: status={getattr(e, 'status_code', '?')}, body={e.error_msg}"
             logger.error(
                 f"Error placing order: {error_detail} "
                 f"(token={token_id[:20]}..., side={side}, size={size}, price={price}, "
